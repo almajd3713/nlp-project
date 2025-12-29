@@ -23,8 +23,11 @@ class GeminiProvider(BaseLLMProvider):
         if config is None:
             config = ProviderConfig(
                 provider_type=ProviderType.GEMINI,
-                model="gemini-2.5-flash",
+                model="gemini-1.5-flash",
             )
+        elif config.model == "default":
+            # Override default model with valid Gemini model
+            config.model = "gemini-1.5-flash"
         super().__init__(config)
         
         self._client = None

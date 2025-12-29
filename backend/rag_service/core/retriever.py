@@ -18,6 +18,7 @@ class RetrievalResult:
     content: str
     score: float
     metadata: dict = field(default_factory=dict)
+    collection: str = ""  # Which collection this result came from
     
     # Fatwa-specific fields extracted from metadata
     @property
@@ -47,6 +48,32 @@ class RetrievalResult:
     @property
     def category(self) -> Optional[str]:
         return self.metadata.get("category") or self.metadata.get("topic")
+    
+    @property
+    def source_type(self) -> str:
+        """Get the type of source (fatwa, hadith, book)."""
+        return self.metadata.get("type", "fatwa")
+    
+    # Book-specific fields
+    @property
+    def madhab(self) -> Optional[str]:
+        return self.metadata.get("madhab")
+    
+    @property
+    def author(self) -> Optional[str]:
+        return self.metadata.get("author")
+    
+    @property
+    def volume(self) -> Optional[int]:
+        return self.metadata.get("volume")
+    
+    @property
+    def page_start(self) -> Optional[int]:
+        return self.metadata.get("page_start")
+    
+    @property
+    def page_end(self) -> Optional[int]:
+        return self.metadata.get("page_end")
 
 
 @dataclass
@@ -58,6 +85,8 @@ class RetrievalQuery:
     similarity_threshold: float = 0.5
     filters: dict = field(default_factory=dict)  # Metadata filters
     rerank: bool = True
+    madhab: Optional[str] = None  # Filter by madhab (for books)
+    collections: list[str] = field(default_factory=lambda: ["fatwas"])  # Collections to search
 
 
 class Retriever:
@@ -162,6 +191,8 @@ class Retriever:
         similarity_threshold: Optional[float] = None,
         filters: Optional[dict] = None,
         rerank: bool = True,
+        madhab: Optional[str] = None,
+        collections: Optional[list[str]] = None,
     ) -> list[RetrievalResult]:
         """
         Retrieve relevant documents for a query.
@@ -172,6 +203,8 @@ class Retriever:
             similarity_threshold: Minimum similarity score
             filters: Metadata filters (e.g., {"scholar": "Ibn Baz"})
             rerank: Whether to re-rank results
+            madhab: Filter by madhab (hanafi, maliki, shafii, hanbali)
+            collections: Collections to search (default: just this retriever's collection)
             
         Returns:
             List of RetrievalResult objects sorted by relevance
@@ -187,11 +220,23 @@ class Retriever:
             similarity_threshold = similarity_threshold if similarity_threshold is not None else query.similarity_threshold
             filters = filters or query.filters
             rerank = query.rerank
+            madhab = madhab or query.madhab
+            collections = collections or query.collections
         
         # Apply defaults from settings
         from ..config.settings import settings
         top_k = top_k or settings.retrieval.top_k
         similarity_threshold = similarity_threshold if similarity_threshold is not None else settings.retrieval.similarity_threshold
+        
+        # Default to this retriever's collection
+        if not collections:
+            collections = [self.collection_name]
+        
+        # Add madhab filter if specified
+        if filters is None:
+            filters = {}
+        if madhab:
+            filters["madhab"] = madhab.lower()
         
         # Generate query embedding
         query_embedding = self.embed([query_text])[0]
@@ -205,31 +250,42 @@ class Retriever:
         try:
             from qdrant_client.models import Filter, FieldCondition, MatchValue
             
-            results = self._qdrant_client.query_points(
-                collection_name=self.collection_name,
-                query=query_embedding,
-                limit=search_limit,
-                query_filter=qdrant_filter,
-                score_threshold=similarity_threshold,
-            )
+            all_results = []
             
-            # Convert to RetrievalResult objects
-            retrieval_results = []
-            for hit in results.points:
-                result = RetrievalResult(
-                    id=str(hit.id),
-                    content=hit.payload.get("content", hit.payload.get("text", "")),
-                    score=hit.score,
-                    metadata=hit.payload,
-                )
-                retrieval_results.append(result)
+            # Search each collection
+            for collection in collections:
+                try:
+                    results = self._qdrant_client.query_points(
+                        collection_name=collection,
+                        query=query_embedding,
+                        limit=search_limit,
+                        query_filter=qdrant_filter,
+                        score_threshold=similarity_threshold,
+                    )
+                    
+                    # Convert to RetrievalResult objects
+                    for hit in results.points:
+                        result = RetrievalResult(
+                            id=str(hit.id),
+                            content=hit.payload.get("content", hit.payload.get("text", "")),
+                            score=hit.score,
+                            metadata=hit.payload,
+                            collection=collection,
+                        )
+                        all_results.append(result)
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to search collection {collection}: {e}")
+            
+            # Sort all results by score
+            all_results.sort(key=lambda x: x.score, reverse=True)
             
             # Re-rank if enabled and reranker available
-            if rerank and self._reranker and retrieval_results:
-                retrieval_results = self._rerank_results(query_text, retrieval_results)
+            if rerank and self._reranker and all_results:
+                all_results = self._rerank_results(query_text, all_results)
             
             # Return top_k results
-            return retrieval_results[:top_k]
+            return all_results[:top_k]
             
         except Exception as e:
             logger.error(f"Retrieval failed: {e}")

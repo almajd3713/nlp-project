@@ -1,8 +1,8 @@
 """
-Citation Generator - Generate formatted citations for fatwa sources.
+Citation Generator - Generate formatted citations for fatwa and book sources.
 
 Creates properly formatted citations for Islamic scholarly works,
-supporting multiple citation styles and formats.
+supporting multiple citation styles and formats for fatwas and books.
 """
 
 from typing import Optional
@@ -24,6 +24,7 @@ class Citation:
     source: Optional[str]
     url: Optional[str]
     relevance_score: float
+    source_type: str = "fatwa"  # fatwa, hadith, or book
     
     def to_dict(self) -> dict:
         return {
@@ -35,6 +36,7 @@ class Citation:
             "source": self.source,
             "url": self.url,
             "relevance_score": self.relevance_score,
+            "source_type": self.source_type,
         }
 
 
@@ -92,36 +94,153 @@ class CitationGenerator:
         citations = []
         
         for i, doc in enumerate(documents, 1):
-            # Extract metadata
-            metadata = self.metadata_handler.enrich_from_payload(doc.metadata)
+            # Determine source type
+            source_type = doc.metadata.get("type", "fatwa")
             
-            # Generate formatted citation
-            if style == "islamic_scholarly":
-                formatted = self._format_islamic_scholarly(metadata, i)
-            elif style == "simple":
-                formatted = self._format_simple(metadata, i)
-            elif style == "detailed":
-                formatted = self._format_detailed(metadata, i)
+            # Generate formatted citation based on source type
+            if source_type == "book":
+                formatted = self._format_book_citation(doc.metadata, i)
+                short = self._format_book_short(doc.metadata, i)
+                scholar = doc.metadata.get("author")
+                source = doc.metadata.get("title")
+            elif source_type == "hadith":
+                formatted = self._format_hadith_citation(doc.metadata, i)
+                short = self._format_hadith_short(doc.metadata, i)
+                scholar = doc.metadata.get("narrator")
+                source = doc.metadata.get("source")
             else:
-                formatted = self._format_simple(metadata, i)
-            
-            # Generate short reference
-            short = self._format_short(metadata, i)
+                # Fatwa (default)
+                metadata = self.metadata_handler.enrich_from_payload(doc.metadata)
+                
+                if style == "islamic_scholarly":
+                    formatted = self._format_islamic_scholarly(metadata, i)
+                elif style == "simple":
+                    formatted = self._format_simple(metadata, i)
+                elif style == "detailed":
+                    formatted = self._format_detailed(metadata, i)
+                else:
+                    formatted = self._format_simple(metadata, i)
+                
+                short = self._format_short(metadata, i)
+                scholar = metadata.scholar
+                source = metadata.source
             
             citation = Citation(
                 index=i,
                 document_id=doc.id,
                 formatted=formatted,
                 short=short,
-                scholar=metadata.scholar,
-                source=metadata.source,
-                url=metadata.url,
+                scholar=scholar,
+                source=source,
+                url=doc.metadata.get("url"),
                 relevance_score=doc.score,
+                source_type=source_type,
             )
             
             citations.append(citation.to_dict())
         
         return citations
+    
+    def _format_book_citation(self, metadata: dict, index: int) -> str:
+        """
+        Format citation for a book source.
+        
+        Format: [Index] [المؤلف], "[الكتاب]", المذهب [المجلد/الجزء]، ص[الصفحة]
+        """
+        parts = []
+        
+        # Author
+        author = metadata.get("author")
+        if author:
+            parts.append(author)
+        else:
+            parts.append("مؤلف غير محدد")
+        
+        # Book title
+        title = metadata.get("title")
+        if title:
+            parts.append(f'"{title}"')
+        
+        # Madhab
+        madhab = metadata.get("madhab")
+        if madhab and madhab != "general":
+            madhab_arabic = {
+                "hanafi": "المذهب الحنفي",
+                "maliki": "المذهب المالكي",
+                "shafii": "المذهب الشافعي",
+                "hanbali": "المذهب الحنبلي",
+                "nawazel": "النوازل",
+            }.get(madhab.lower(), madhab)
+            parts.append(madhab_arabic)
+        
+        # Volume and page
+        volume = metadata.get("volume")
+        page_start = metadata.get("page_start")
+        page_end = metadata.get("page_end")
+        
+        if volume and volume > 1:
+            parts.append(f"الجزء {volume}")
+        
+        if page_start:
+            if page_end and page_end != page_start:
+                parts.append(f"ص{page_start}-{page_end}")
+            else:
+                parts.append(f"ص{page_start}")
+        
+        # Chapter if available
+        chapter = metadata.get("chapter")
+        if chapter:
+            chapter_short = chapter[:50] + "..." if len(chapter) > 50 else chapter
+            parts.append(f"({chapter_short})")
+        
+        return f"[{index}] " + "، ".join(parts)
+    
+    def _format_book_short(self, metadata: dict, index: int) -> str:
+        """Generate short reference for book."""
+        title = metadata.get("title", "")
+        if title:
+            short_title = title.split()[0] if title else "كتاب"
+            page = metadata.get("page_start", "")
+            return f"[{index}: {short_title}، ص{page}]" if page else f"[{index}: {short_title}]"
+        return f"[{index}]"
+    
+    def _format_hadith_citation(self, metadata: dict, index: int) -> str:
+        """
+        Format citation for a hadith source.
+        
+        Format: [Index] رواه [Source]، كتاب [Book]، رقم [Number]
+        """
+        parts = []
+        
+        # Source (collection)
+        source = metadata.get("source")
+        if source:
+            parts.append(f"رواه {source}")
+        
+        # Book/chapter within collection
+        book = metadata.get("book")
+        if book:
+            parts.append(f"كتاب {book}")
+        
+        # Hadith number
+        number = metadata.get("number")
+        if number:
+            parts.append(f"رقم {number}")
+        
+        # Grade if available
+        grade = metadata.get("grade")
+        if grade:
+            parts.append(f"({grade})")
+        
+        return f"[{index}] " + "، ".join(parts) if parts else f"[{index}] حديث"
+    
+    def _format_hadith_short(self, metadata: dict, index: int) -> str:
+        """Generate short reference for hadith."""
+        source = metadata.get("source", "حديث")
+        number = metadata.get("number", "")
+        if source and number:
+            return f"[{index}: {source} #{number}]"
+        return f"[{index}: {source}]" if source else f"[{index}]"
     
     def _format_islamic_scholarly(self, metadata: FatwaMetadata, index: int) -> str:
         """

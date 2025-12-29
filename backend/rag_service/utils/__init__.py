@@ -5,6 +5,9 @@ from .preprocessing import (
     normalize_arabic,
     remove_diacritics,
     detect_language,
+    preprocess_ocr_text,
+    fix_ocr_errors,
+    fix_repeated_characters,
 )
 from .prompts import (
     get_system_prompt,
@@ -23,6 +26,9 @@ __all__ = [
     "normalize_arabic", 
     "remove_diacritics",
     "detect_language",
+    "preprocess_ocr_text",
+    "fix_ocr_errors",
+    "fix_repeated_characters",
     # Prompts
     "get_system_prompt",
     "build_rag_prompt",

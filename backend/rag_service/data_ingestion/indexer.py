@@ -11,9 +11,10 @@ from tqdm import tqdm
 
 from .fatwa_loader import FatwaDocument
 from .hadith_loader import HadithDocument
+from .book_loader import BookDocument
 
 
-DocumentType = Union[FatwaDocument, HadithDocument]
+DocumentType = Union[FatwaDocument, HadithDocument, BookDocument]
 
 
 class VectorIndexer:
@@ -273,3 +274,77 @@ class VectorIndexer:
         result['hadith_stats'] = stats
         
         return result
+
+    def index_books(
+        self,
+        data_path: Path | str,
+        collection_name: str = "books",
+        madhab_filter: str | None = None,
+        preprocess: bool = False,
+        force_recreate: bool = False,
+    ) -> dict:
+        """
+        Load and index books from directory.
+        
+        Args:
+            data_path: Path to OCR book files (e.g., data/OCR_google_documentAI_...)
+            collection_name: Collection name (default: "books")
+            madhab_filter: Only index specific madhab (e.g., "hanafi", "maliki")
+            preprocess: Apply OCR preprocessing
+            force_recreate: Recreate collection if exists
+            
+        Returns:
+            Indexing statistics
+        """
+        from .book_loader import BookLoader
+        
+        # Create collection
+        self.create_collection(collection_name, force_recreate=force_recreate)
+        
+        # Create payload indices for book metadata
+        self._create_book_indices(collection_name)
+        
+        # Load books
+        loader = BookLoader(
+            target_chunk_tokens=1000,
+            chunk_overlap_tokens=100,
+            preprocess=preprocess,
+            extract_chapters=True,
+        )
+        documents = list(loader.load_directory(data_path, madhab_filter=madhab_filter))
+        
+        # Print statistics
+        stats = loader.get_statistics(documents)
+        logger.info(
+            f"Loaded {stats['total_chunks']} chunks from {stats['unique_books']} books "
+            f"({', '.join(stats['madhabs'])})"
+        )
+        
+        # Index
+        result = self.index_documents(documents, collection_name)
+        result['book_stats'] = stats
+        
+        return result
+    
+    def _create_book_indices(self, collection_name: str):
+        """Create payload indices for efficient book filtering."""
+        try:
+            from qdrant_client.models import PayloadSchemaType
+            
+            # Create indices for common filter fields
+            index_fields = ['madhab', 'author', 'book_id', 'type', 'volume']
+            
+            for field in index_fields:
+                try:
+                    self._qdrant.create_payload_index(
+                        collection_name=collection_name,
+                        field_name=field,
+                        field_schema=PayloadSchemaType.KEYWORD,
+                    )
+                    logger.debug(f"Created index for field: {field}")
+                except Exception as e:
+                    # Index might already exist
+                    logger.debug(f"Index creation for {field}: {e}")
+                    
+        except Exception as e:
+            logger.warning(f"Failed to create payload indices: {e}")
