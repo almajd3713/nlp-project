@@ -1,0 +1,5 @@
+data/
+code/ocr/Arabic-Deep-Learning-OCR/
+
+__pycache__/
+.env
